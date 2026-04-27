@@ -3,7 +3,7 @@ requires = ["hatchling>=1.18"]
 build-backend = "hatchling.build"
 
 [project]
-name = "duck-ai-client"
+name = "p2d-duck"
 version = "0.5.0"
 description = "Free Python client for DuckDuckGo AI Chat (duck.ai). Sync + async + streaming + image generation + image upload (multimodal). No API key required."
 readme = "README.md"
