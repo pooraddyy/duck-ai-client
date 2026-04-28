@@ -35,6 +35,7 @@ from .models import (
 log = logging.getLogger("duck_ai")
 
 _BASE = "https://duck.ai"
+_DDG_BASE = "https://duckduckgo.com"
 _DEFAULT_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) "
@@ -59,9 +60,10 @@ class DuckChat:
         fe_version: Optional[str] = None,
         client: Optional[httpx.Client] = None,
         timeout: float = 60.0,
-        max_retries: int = 4,
+        max_retries: int = 3,
         backoff_base: float = 0.6,
         warm_session: bool = True,
+        aggressive_warm: bool = True,
     ):
         self.model = resolve_model(model)
         self.effort = effort
@@ -70,6 +72,7 @@ class DuckChat:
         self.timeout = timeout
         self.max_retries = max(1, int(max_retries))
         self.backoff_base = max(0.0, float(backoff_base))
+        self.aggressive_warm = aggressive_warm
         self.history = History(model=self.model)
         self._jwk: Optional[Dict[str, Any]] = None
         self._jwk_lock = threading.Lock()
@@ -80,23 +83,35 @@ class DuckChat:
             headers={
                 "User-Agent": self.user_agent,
                 "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
                 "Referer": f"{_BASE}/",
                 "Origin": _BASE,
                 "Sec-Fetch-Dest": "empty",
                 "Sec-Fetch-Mode": "cors",
                 "Sec-Fetch-Site": "same-origin",
+                "Sec-Ch-Ua": '"Not.A/Brand";v="99", "Chromium";v="136"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"macOS"',
             },
             follow_redirects=True,
         )
         self._warmed = not warm_session
         self._pending_hash: Optional[str] = None
+        self._seeded = False
         if warm_session:
             try:
                 self._warm()
             except Exception as e:
-                # Don't hard-fail if warming fails — the retry layer will
-                # cover the cold-start anyway. Just log.
+                # Warm-up is best-effort; the retry layer (if enabled) will
+                # cover any residual cold-start failure.
                 log.debug("warm-up failed: %s", e)
+        if warm_session and aggressive_warm:
+            try:
+                self._seed_session()
+            except Exception as e:
+                # Seed is also best-effort. If the network/duck.ai is down
+                # we'll still surface a real error on the user's first call.
+                log.debug("session seed failed: %s", e)
 
     # ------------------------------------------------------------------ ctx
     def __enter__(self) -> "DuckChat":
@@ -117,16 +132,76 @@ class DuckChat:
 
     # ----------------------------------------------------------------- warm
     def _warm(self) -> None:
+        # Browser-faithful warm-up:
+        #   1. Visit the duck.ai homepage so we collect any Set-Cookie headers
+        #      it issues (session, AB-test, A/A buckets, etc).
+        #   2. Set DuckDuckGo's cookie-consent + locale cookies on both
+        #      duck.ai and duckduckgo.com domains. Without these the chat
+        #      endpoint frequently 418s on the very first call.
+        #   3. Visit the chat-mode SERP URL (`/?q=...&ia=chat`) which is what
+        #      a real browser hits when a user clicks "AI Chat" — this seeds
+        #      the second-tier cookies the chat endpoint inspects.
         if self._warmed:
             return
         try:
+            html_headers = {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Upgrade-Insecure-Requests": "1",
+            }
+            self._client.get(f"{_BASE}/", headers=html_headers, timeout=10.0)
+            for k, v in (
+                ("5", "1"),         # cookie-consent acknowledged
+                ("ah", "wt-wt"),    # region: world-wide
+                ("dcs", "1"),       # duckchat enabled
+                ("dcm", "3"),       # duckchat model picker dismissed
+                ("isRecentChatOn", "1"),
+            ):
+                for dom in (".duck.ai", ".duckduckgo.com"):
+                    try:
+                        self._client.cookies.set(k, v, domain=dom)
+                    except Exception:
+                        pass
             self._client.get(
-                f"{_BASE}/",
-                headers={"Accept": "text/html"},
+                f"{_DDG_BASE}/?q=DuckDuckGo+AI+Chat&ia=chat&duckai=1",
+                headers=html_headers,
                 timeout=10.0,
             )
         finally:
             self._warmed = True
+
+    def _seed_session(self) -> None:
+        # Make a single tiny throwaway chat call internally so that
+        # `_pending_hash` is populated with a server-issued, freshly-rotated
+        # challenge. After this seed, every user-facing call uses the
+        # rotated hash chain — which is what gives us first-attempt success
+        # without leaning on the retry loop.
+        if self._seeded:
+            return
+        msgs = [Message(role=Role.User.value, content="hi").to_dict()]
+        # Seed with the SAME model the user picked. duck.ai's challenge
+        # rotation appears to bind the next hash to the model used in the
+        # request that produced it; using a different model on the seed
+        # yields a hash the chat endpoint rejects on the user's first call.
+        payload = self._build_payload(msgs, model=self.model, can_use_tools=False)
+        # Use a small internal retry budget here so the seed itself is
+        # robust on a true cold start. This budget is independent of
+        # `self.max_retries` (which is the user-facing retry budget).
+        prev = self.max_retries
+        self.max_retries = 4
+        try:
+            for _ in self._stream_with_retry(payload):
+                # We only need to drive the stream far enough to capture
+                # the rotated challenge header from the response; we don't
+                # care about the model output.
+                if self._pending_hash:
+                    break
+        finally:
+            self.max_retries = prev
+            self._seeded = True
 
     # ------------------------------------------------------------ challenge
     def _fetch_challenge_header(self) -> str:

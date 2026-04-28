@@ -143,10 +143,31 @@ def solve_challenge(challenge_b64: str, user_agent: str) -> str:
     return base64.b64encode(payload).decode("ascii")
 
 def make_fe_signals(*, duration_ms: int = 3000) -> str:
+    # Build a realistic event timeline so duck.ai's anti-bot heuristics
+    # see a "real user" interaction, not an empty signal envelope.
+    # Browser sends keypress/focus events with relative timestamps; we
+    # mimic that pattern with reasonable jitter.
+    import random as _r
+
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - duration_ms
+    events = []
+    t = _r.randint(80, 180)
+    events.append({"name": "onboarding_impression_1", "delta": t})
+    t += _r.randint(120, 260)
+    events.append({"name": "onboarding_impression_2", "delta": t})
+    t += _r.randint(200, 500)
+    events.append({"name": "startNewChat", "delta": t})
+    n_keys = _r.randint(6, 18)
+    for _ in range(n_keys):
+        t += _r.randint(40, 180)
+        events.append({"name": "user_input", "delta": t})
+    t += _r.randint(120, 350)
+    events.append({"name": "user_submit", "delta": t})
     payload = {
-        "start": int(time.time() * 1000) - duration_ms,
-        "events": [],
-        "end": duration_ms,
+        "start": start_ms,
+        "events": events,
+        "end": max(t + _r.randint(20, 90), duration_ms),
     }
     return base64.b64encode(
         json.dumps(payload, separators=(",", ":")).encode("utf-8")
