@@ -8,7 +8,9 @@ Free, no-API-key Python client for **DuckDuckGo AI Chat** ([duck.ai](https://duc
 - 6 chat models + image generation: GPT-4o mini, GPT-5 mini, Claude Haiku 4.5, Llama 4 Scout, Mistral Small, GPT-OSS 120B.
 - **Reasoning effort switching** (`fast` vs `reasoning`).
 - **Image generation** (`image-generation` model).
+- **Image edit** (caption + source image → edited image, same model).
 - **Image upload / multimodal** (vision-capable chats).
+- **Web search tool** opt-in per call on supported models (GPT-4o mini, GPT-5 mini, Claude Haiku 4.5).
 - Built-in solver for the `x-vqd-hash-1` JS challenge via `mini-racer`.
 - CLI: `p2d-duck`.
 - No account, no API key, no server, no fee.
@@ -21,7 +23,7 @@ pip install p2d-duck
 
 > The Python import name is still `duck_ai`, e.g. `from duck_ai import DuckChat`.
 
-Latest release: [**v1.0.3**](https://github.com/pooraddyy/duck-ai-client/releases/tag/v1.0.3) — see the full changelog on the release page.
+Latest release: [**v1.1.0**](https://github.com/pooraddyy/p2d-duck/releases/tag/v1.1.0) — see the full changelog on the release page.
 
 ## Quickstart
 
@@ -99,6 +101,47 @@ with DuckChat(model=image_generation) as duck:
     )
 ```
 
+## Image edit
+
+Edit an existing image with a caption. Same `image-generation` model, same
+endpoint as image generation, but the user message carries both a text
+caption and an `ImagePart`:
+
+```python
+from duck_ai import DuckChat, image_generation
+
+with DuckChat(model=image_generation) as duck:
+    duck.edit_image(
+        "make the duck wear a tiny chef hat",
+        "duck_wizard.jpg",
+        save_to="duck_chef.jpg",
+    )
+```
+
+## Web search
+
+Web search is an opt-in tool, off by default. Pass `web_search=True` per call.
+It is only sent to models that actually support it (GPT-4o mini, GPT-5 mini,
+Claude Haiku 4.5); the flag is silently ignored for the others.
+
+```python
+from duck_ai import DuckChat, gpt5_mini, model_supports_web_search
+
+assert model_supports_web_search(gpt5_mini)
+
+with DuckChat(model=gpt5_mini) as duck:
+    print(duck.ask(
+        "What did Apple announce at WWDC this year?",
+        web_search=True,
+    ))
+```
+
+CLI:
+
+```bash
+p2d-duck -m gpt5_mini chat "Latest SpaceX launch?" --web-search
+```
+
 ## Image upload (multimodal)
 
 ```python
@@ -126,6 +169,8 @@ p2d-duck -m claude chat "Hi Claude!"
 p2d-duck -m gpt5_mini -e reasoning chat "Solve x^2 - 5x + 6 = 0"
 p2d-duck chat "Describe this" --image cat.jpg
 p2d-duck image "a watercolor moon over a lake" -o moon.jpg
+p2d-duck edit "make the cat wear sunglasses" --image cat.jpg -o cat_cool.jpg
+p2d-duck -m claude chat "Top news today" --web-search
 p2d-duck models                                # list known models
 ```
 

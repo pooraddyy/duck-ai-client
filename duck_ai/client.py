@@ -27,6 +27,7 @@ from .models import (
     ModelType,
     Role,
     image_generation,
+    model_supports_web_search,
     resolve_effort,
     resolve_model,
     vision_capable_default,
@@ -43,12 +44,20 @@ _DEFAULT_UA = (
 )
 # duck.ai rotates this string. Library users can override via `fe_version=`.
 _DEFAULT_FE_VERSION = "serp_20260424_180649_ET-0bdc33b2a02ebf8f235def65d887787f694720a1"
+# Tool channels duck.ai exposes via `metadata.toolChoice`. The non-WebSearch
+# channels stay off by default (matches the duck.ai web client behaviour).
+# `WebSearch` is opt-in per call via the `web_search=True` argument.
 _TOOL_CHOICE_OFF = {
     "NewsSearch": False,
     "VideosSearch": False,
     "LocalSearch": False,
     "WeatherForecast": False,
 }
+
+# duck.ai routes the `image-generation` model to a different endpoint that
+# accepts both pure prompt-to-image and image+prompt (image edit) payloads.
+_CHAT_PATH = "/duckchat/v1/chat"
+_IMAGES_PATH = "/duckchat/v1/images"
 
 class DuckChat:
     def __init__(
@@ -193,12 +202,19 @@ class DuckChat:
         prev = self.max_retries
         self.max_retries = 4
         try:
-            for _ in self._stream_with_retry(payload):
-                # We only need to drive the stream far enough to capture
-                # the rotated challenge header from the response; we don't
-                # care about the model output.
-                if self._pending_hash:
-                    break
+            try:
+                for _ in self._stream_with_retry(payload):
+                    # We only need to drive the stream far enough to capture
+                    # the rotated challenge header from the response; we
+                    # don't care about the model output.
+                    if self._pending_hash:
+                        break
+            except Exception as e:
+                # A failed seed must not leave a poisoned `_pending_hash`
+                # behind; the user's first real call would inherit it and
+                # 418 immediately. Drop it and let /status be hit fresh.
+                self._pending_hash = None
+                log.debug("session seed stream failed: %s", e)
         finally:
             self.max_retries = prev
             self._seeded = True
@@ -252,11 +268,19 @@ class DuckChat:
         model: Optional[str] = None,
         can_use_tools: bool = True,
         effort: Optional[str] = None,
+        web_search: bool = False,
     ) -> Dict[str, Any]:
         m = resolve_model(model or self.model)
+        tool_choice: Dict[str, bool] = dict(_TOOL_CHOICE_OFF)
+        # Only flip WebSearch on for models that actually expose it; sending
+        # it for an unsupported model just gets it silently ignored, but it
+        # also makes the request signature look unusual to the anti-abuse
+        # heuristics, so we keep it off there.
+        if web_search and model_supports_web_search(m):
+            tool_choice["WebSearch"] = True
         payload: Dict[str, Any] = {
             "model": m,
-            "metadata": {"toolChoice": dict(_TOOL_CHOICE_OFF)},
+            "metadata": {"toolChoice": tool_choice},
             "messages": messages,
             "canUseTools": can_use_tools,
         }
@@ -264,12 +288,21 @@ class DuckChat:
         if eff is not None:
             payload["reasoningEffort"] = eff
         payload["canUseApproxLocation"] = None
-        payload["durableStream"] = {
-            "messageId": str(uuid.uuid4()),
-            "conversationId": str(uuid.uuid4()),
-            "publicKey": self._get_jwk(),
-        }
+        # The /images endpoint does not accept the durableStream public key.
+        # Only attach it for the regular chat endpoint.
+        if m != image_generation:
+            payload["durableStream"] = {
+                "messageId": str(uuid.uuid4()),
+                "conversationId": str(uuid.uuid4()),
+                "publicKey": self._get_jwk(),
+            }
         return payload
+
+    @staticmethod
+    def _endpoint_for(model: str) -> str:
+        # `image-generation` routes to /duckchat/v1/images for both pure
+        # text-to-image and image-edit (text + image input) requests.
+        return _IMAGES_PATH if model == image_generation else _CHAT_PATH
 
     @staticmethod
     def _has_image(messages: List[Dict[str, Any]]) -> bool:
@@ -284,9 +317,10 @@ class DuckChat:
     # ----------------------------------------------------- HTTP + SSE iter
     def _chat_stream(self, payload: Dict[str, Any]):
         hash_header = self._fetch_challenge_header()
+        path = self._endpoint_for(payload.get("model", self.model))
         return self._client.stream(
             "POST",
-            f"{_BASE}/duckchat/v1/chat",
+            f"{_BASE}{path}",
             content=json.dumps(payload),
             headers={
                 "Content-Type": "application/json",
@@ -378,14 +412,31 @@ class DuckChat:
     ) -> Iterator[dict]:
         last_exc: Optional[BaseException] = None
         for attempt in range(self.max_retries):
+            yielded = False
             try:
-                yield from self._attempt_stream(payload)
+                for item in self._attempt_stream(payload):
+                    yielded = True
+                    yield item
                 return
             except (ChallengeError, httpx.RemoteProtocolError, httpx.ReadError) as e:
+                # The cached `_pending_hash` (if any) is what produced this
+                # rejection — drop it so the next attempt fetches a fresh
+                # challenge from /status instead of replaying the bad one.
+                self._pending_hash = None
+                if yielded:
+                    # Mid-stream failure: retrying would replay the chunks
+                    # we already emitted, which makes downstream consumers
+                    # (e.g. Telegram bots that edit a message with the
+                    # cumulative text) send the same text twice and trip
+                    # "Message is not modified". Surface the error instead
+                    # of silently producing duplicate output.
+                    raise
                 last_exc = e  # transient: refresh challenge and retry
             except APIError as e:
                 # Retry on 5xx and on the synthetic empty-stream APIError.
                 if e.status_code is None or e.status_code >= 500:
+                    if yielded:
+                        raise
                     last_exc = e
                 else:
                     raise
@@ -395,8 +446,12 @@ class DuckChat:
                 # RateLimitError but we already raised it specifically.
                 if isinstance(e, ConversationLimitError):
                     raise
+                if yielded:
+                    raise
                 last_exc = e
             except httpx.TimeoutException as e:
+                if yielded:
+                    raise
                 last_exc = e
             # Backoff with jitter before the next attempt.
             if attempt < self.max_retries - 1:
@@ -420,6 +475,7 @@ class DuckChat:
         remember: bool = True,
         model: Optional[Union[ModelType, str]] = None,
         effort: Optional[str] = None,
+        web_search: bool = False,
     ) -> Iterator[str]:
         if remember:
             self.history.add_user(prompt)
@@ -440,7 +496,21 @@ class DuckChat:
             )
         else:
             use_model = self.model
-        payload = self._build_payload(messages, model=use_model, effort=effort)
+        # duck.ai's challenge rotation binds the next `x-vqd-hash-1` to the
+        # model used in the request that produced it. The session seed and
+        # any previous chat call cached a hash bound to `self.model`. If
+        # this call uses a different model (e.g. an image upload routed to
+        # a vision-capable model), replaying that cached hash makes the
+        # server return 418 ERR_CHALLENGE. Drop it so we fetch a fresh
+        # challenge from /status for this request.
+        if use_model != self.model:
+            self._pending_hash = None
+        payload = self._build_payload(
+            messages,
+            model=use_model,
+            effort=effort,
+            web_search=web_search,
+        )
         collected: List[str] = []
         for obj in self._stream_with_retry(payload):
             chunk = obj.get("message") or ""
@@ -457,9 +527,16 @@ class DuckChat:
         remember: bool = True,
         model: Optional[Union[ModelType, str]] = None,
         effort: Optional[str] = None,
+        web_search: bool = False,
     ) -> str:
         return "".join(
-            self.stream(prompt, remember=remember, model=model, effort=effort)
+            self.stream(
+                prompt,
+                remember=remember,
+                model=model,
+                effort=effort,
+                web_search=web_search,
+            )
         )
 
     def ask_with_image(
@@ -471,10 +548,15 @@ class DuckChat:
         remember: bool = True,
         model: Optional[Union[ModelType, str]] = None,
         effort: Optional[str] = None,
+        web_search: bool = False,
     ) -> str:
         part = self._coerce_image(image, mime_type)
         return self.ask(
-            [prompt, part], remember=remember, model=model, effort=effort
+            [prompt, part],
+            remember=remember,
+            model=model,
+            effort=effort,
+            web_search=web_search,
         )
 
     @staticmethod
@@ -497,9 +579,45 @@ class DuckChat:
         *,
         save_to: Optional[str] = None,
     ) -> bytes:
-        messages = [Message(role=Role.User.value, content=prompt).to_dict()]
+        return self._run_image_request(
+            content=prompt,
+            save_to=save_to,
+        )
+
+    def edit_image(
+        self,
+        prompt: str,
+        image: Union[str, bytes, ImagePart],
+        *,
+        mime_type: str = "image/png",
+        save_to: Optional[str] = None,
+    ) -> bytes:
+        # Image edit on duck.ai is the same /duckchat/v1/images endpoint as
+        # image generation, but the user message carries both a text caption
+        # and an `image` content part. The server returns the edited image
+        # in the same `partial-image` / `generated-image` SSE channel.
+        part = self._coerce_image(image, mime_type)
+        return self._run_image_request(
+            content=[prompt, part],
+            save_to=save_to,
+        )
+
+    def _run_image_request(
+        self,
+        *,
+        content: Union[str, List[Union[str, ImagePart, dict]]],
+        save_to: Optional[str],
+    ) -> bytes:
+        messages = [Message(role=Role.User.value, content=content).to_dict()]
+        # The image-generation endpoint is bound to its own model and does
+        # not share the rotated hash chain with the chat endpoint, so drop
+        # any cached pending hash before we route here.
+        if self.model != image_generation:
+            self._pending_hash = None
         payload = self._build_payload(
-            messages, model=image_generation, can_use_tools=False
+            messages,
+            model=image_generation,
+            can_use_tools=True,
         )
         partials: List[str] = []
         final: Optional[str] = None

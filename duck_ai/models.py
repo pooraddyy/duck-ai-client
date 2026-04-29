@@ -85,11 +85,19 @@ MODEL_ALIASES: Dict[str, str] = {
 
 # Per-model capability table. `default`, `fast`, and `thinking` are the
 # duck.ai effort tokens to send for the corresponding caller intent.
+# `web_search` indicates whether duck.ai exposes the WebSearch tool for
+# this model; `vision` indicates whether the model can see uploaded
+# images natively (otherwise the client re-routes to a vision model).
 _MODEL_CAPABILITIES: Dict[str, Dict[str, object]] = {
-    "gpt-4o-mini": {"reasoning": False, "vision": False},
+    "gpt-4o-mini": {
+        "reasoning": False,
+        "vision": True,
+        "web_search": True,
+    },
     "gpt-5-mini": {
         "reasoning": True,
         "vision": True,
+        "web_search": True,
         "fast": "minimal",
         "default": "minimal",
         "thinking": "low",
@@ -97,6 +105,7 @@ _MODEL_CAPABILITIES: Dict[str, Dict[str, object]] = {
     "claude-haiku-4-5": {
         "reasoning": True,
         "vision": True,
+        "web_search": True,
         "fast": "none",
         "default": "low",
         "thinking": "low",
@@ -104,16 +113,26 @@ _MODEL_CAPABILITIES: Dict[str, Dict[str, object]] = {
     "meta-llama/Llama-4-Scout-17B-16E-Instruct": {
         "reasoning": False,
         "vision": False,
+        "web_search": False,
     },
-    "mistral-small-2603": {"reasoning": False, "vision": False},
+    "mistral-small-2603": {
+        "reasoning": False,
+        "vision": False,
+        "web_search": False,
+    },
     "tinfoil/gpt-oss-120b": {
         "reasoning": True,
         "vision": False,
+        "web_search": False,
         "fast": "low",
         "default": "low",
         "thinking": "low",
     },
-    "image-generation": {"reasoning": False, "vision": False},
+    "image-generation": {
+        "reasoning": False,
+        "vision": True,
+        "web_search": False,
+    },
 }
 
 def resolve_model(name: Union["ModelType", str, None]) -> str:
@@ -137,6 +156,13 @@ def model_supports_reasoning(model: Union["ModelType", str]) -> bool:
 def model_supports_vision(model: Union["ModelType", str]) -> bool:
     return bool(
         _MODEL_CAPABILITIES.get(resolve_model(model), {}).get("vision", False)
+    )
+
+def model_supports_web_search(model: Union["ModelType", str]) -> bool:
+    return bool(
+        _MODEL_CAPABILITIES.get(resolve_model(model), {}).get(
+            "web_search", False
+        )
     )
 
 def vision_capable_default() -> str:

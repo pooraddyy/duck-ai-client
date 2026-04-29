@@ -45,11 +45,29 @@ def _build_parser() -> argparse.ArgumentParser:
     chat.add_argument(
         "--image", help="Attach an image (path, data URL, or http(s) URL)"
     )
+    chat.add_argument(
+        "--web-search",
+        action="store_true",
+        help="Enable WebSearch tool for this chat (model-dependent)",
+    )
 
     image = sub.add_parser("image", help="Generate an image")
     image.add_argument("prompt", nargs="+", help="Image prompt")
     image.add_argument(
         "-o", "--output", default="duck.jpg", help="Output file path"
+    )
+
+    edit = sub.add_parser("edit", help="Edit an image with a caption")
+    edit.add_argument(
+        "prompt", nargs="+", help="Edit instruction (caption)"
+    )
+    edit.add_argument(
+        "--image",
+        required=True,
+        help="Source image (path, data URL, or http(s) URL)",
+    )
+    edit.add_argument(
+        "-o", "--output", default="duck-edit.jpg", help="Output file path"
     )
 
     sub.add_parser("models", help="List known model ids")
@@ -77,21 +95,28 @@ def _make_client(args) -> DuckChat:
 
 def _run_chat(args: argparse.Namespace) -> int:
     duck = _make_client(args)
+    web = bool(getattr(args, "web_search", False))
     if args.prompt:
         prompt = " ".join(args.prompt)
         try:
             if args.image:
                 if args.no_stream:
-                    print(duck.ask_with_image(prompt, args.image))
+                    print(
+                        duck.ask_with_image(
+                            prompt, args.image, web_search=web
+                        )
+                    )
                 else:
-                    for chunk in duck.stream([prompt, _img(args.image)]):
+                    for chunk in duck.stream(
+                        [prompt, _img(args.image)], web_search=web
+                    ):
                         print(chunk, end="", flush=True)
                     print()
             else:
                 if args.no_stream:
-                    print(duck.ask(prompt))
+                    print(duck.ask(prompt, web_search=web))
                 else:
-                    for chunk in duck.stream(prompt):
+                    for chunk in duck.stream(prompt, web_search=web):
                         print(chunk, end="", flush=True)
                     print()
         finally:
@@ -116,9 +141,9 @@ def _run_chat(args: argparse.Namespace) -> int:
             try:
                 print("ai> ", end="", flush=True)
                 if args.no_stream:
-                    print(duck.ask(line))
+                    print(duck.ask(line, web_search=web))
                 else:
-                    for chunk in duck.stream(line):
+                    for chunk in duck.stream(line, web_search=web):
                         print(chunk, end="", flush=True)
                     print()
             except Exception as e:
@@ -137,6 +162,19 @@ def _run_image(args: argparse.Namespace) -> int:
         duck.close()
     return 0
 
+def _run_edit(args: argparse.Namespace) -> int:
+    prompt = " ".join(args.prompt)
+    duck = DuckChat(model=image_generation, max_retries=args.retries)
+    try:
+        # _img() returns a fully-prepared ImagePart so URLs and data URLs
+        # both work, not just local file paths.
+        part = _img(args.image)
+        data = duck.edit_image(prompt, part, save_to=args.output)
+        print(f"saved {len(data)} bytes -> {args.output}")
+    finally:
+        duck.close()
+    return 0
+
 def _run_models(_args: argparse.Namespace) -> int:
     for m in list_models():
         print(m)
@@ -147,6 +185,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "image":
         return _run_image(args)
+    if args.cmd == "edit":
+        return _run_edit(args)
     if args.cmd == "models":
         return _run_models(args)
     return _run_chat(args)

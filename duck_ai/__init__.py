@@ -29,11 +29,12 @@ from .models import (
     mistral_small,
     model_supports_reasoning,
     model_supports_vision,
+    model_supports_web_search,
     resolve_effort,
     resolve_model,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = [
     "DuckChat",
@@ -51,6 +52,7 @@ __all__ = [
     "resolve_effort",
     "model_supports_reasoning",
     "model_supports_vision",
+    "model_supports_web_search",
     "list_models",
     "MODEL_ALIASES",
     "gpt4",
