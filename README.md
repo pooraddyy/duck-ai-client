@@ -23,7 +23,9 @@ pip install p2d-duck
 
 > The Python import name is still `duck_ai`, e.g. `from duck_ai import DuckChat`.
 
-Latest release: [**v1.1.0**](https://github.com/pooraddyy/p2d-duck/releases/tag/v1.1.0) — see the full changelog on the release page.
+Latest release: [**v1.2.0**](https://github.com/pooraddyy/p2d-duck/releases/tag/v1.2.0) — see the full changelog on the release page.
+
+> **v1.2.0:** chat history is now **off by default** to match a clean single-turn API call. Pass `history=True` (or `--history` on the CLI, or `/history on` in the REPL) to opt back into multi-turn memory. A reference Telegram bot ([`bot.py`](bot.py)) is shipped alongside the library.
 
 ## Quickstart
 
@@ -57,16 +59,38 @@ with DuckChat() as duck:
 
 ## Multi-turn conversation
 
-`DuckChat` keeps history automatically. Use `duck.reset()` to start fresh.
+History is **off by default** in v1.2.0+. Each call to `ask` / `stream` is treated as a fresh single-turn request unless you opt in.
+
+Three ways to enable it:
 
 ```python
 from duck_ai import DuckChat, claude
 
-with DuckChat(model=claude) as duck:
+# 1) Per-client: turn it on at construction time
+with DuckChat(model=claude, history=True) as duck:
     duck.ask("My name is Alice. Remember it.")
-    print(duck.ask("What is my name?"))
-    duck.reset()
+    print(duck.ask("What is my name?"))   # -> Alice
+    duck.reset()                          # clear the buffered turns
+
+# 2) Toggle live without recreating the client
+with DuckChat(model=claude) as duck:
+    duck.enable_history()
+    duck.ask("Pick a number between 1 and 10.")
+    print(duck.ask("What number did you pick?"))
+    duck.disable_history()                # also clears the buffer
+
+# 3) Per-call override
+with DuckChat() as duck:
+    duck.ask("hi", remember=True)         # buffer this turn
+    duck.ask("ignore me", remember=False) # do not buffer
 ```
+
+In the CLI:
+
+- `p2d-duck --history chat` — start with history on
+- Inside the REPL: `/history on` / `/history off` to toggle, `/reset` to clear
+
+The toggle is purely client-side. duck.ai's chat endpoint is stateless — multi-turn memory is implemented by replaying previous turns in the request, so disabling history also reduces token usage and latency.
 
 ## Reasoning vs Fast mode
 

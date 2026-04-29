@@ -73,6 +73,7 @@ class DuckChat:
         backoff_base: float = 0.6,
         warm_session: bool = True,
         aggressive_warm: bool = True,
+        history: bool = False,
     ):
         self.model = resolve_model(model)
         self.effort = effort
@@ -82,6 +83,13 @@ class DuckChat:
         self.max_retries = max(1, int(max_retries))
         self.backoff_base = max(0.0, float(backoff_base))
         self.aggressive_warm = aggressive_warm
+        # When `history` is False (the default), each call is treated as a
+        # fresh single-turn request: no previous turn is sent to duck.ai
+        # and no new turn is appended. The `History` object is still
+        # allocated so callers can manually flip the toggle later via
+        # `enable_history()` / `disable_history()` without losing prior
+        # state if any was set programmatically.
+        self.history_enabled = bool(history)
         self.history = History(model=self.model)
         self._jwk: Optional[Dict[str, Any]] = None
         self._jwk_lock = threading.Lock()
@@ -137,6 +145,17 @@ class DuckChat:
                 pass
 
     def reset(self) -> None:
+        self.history.clear()
+
+    def enable_history(self) -> None:
+        # Turn multi-turn memory on. Subsequent calls without an explicit
+        # `remember=` kwarg will append to and replay from history.
+        self.history_enabled = True
+
+    def disable_history(self) -> None:
+        # Turn multi-turn memory off and drop anything already buffered,
+        # so the next call is a clean single-turn request.
+        self.history_enabled = False
         self.history.clear()
 
     # ----------------------------------------------------------------- warm
@@ -472,11 +491,20 @@ class DuckChat:
         self,
         prompt: Union[str, List[Union[str, ImagePart, dict]]],
         *,
-        remember: bool = True,
+        remember: Optional[bool] = None,
         model: Optional[Union[ModelType, str]] = None,
         effort: Optional[str] = None,
         web_search: bool = False,
     ) -> Iterator[str]:
+        # `remember` resolution:
+        #   - explicit True/False per call always wins
+        #   - otherwise fall back to the client-wide `history_enabled` flag
+        # The HAR for duck.ai's web client shows there is no server-side
+        # history toggle: the chat endpoint is stateless and the client
+        # alone decides whether to replay prior turns. So this flag is
+        # purely about whether we buffer + replay locally.
+        if remember is None:
+            remember = self.history_enabled
         if remember:
             self.history.add_user(prompt)
             messages = self.history.to_messages()
@@ -524,7 +552,7 @@ class DuckChat:
         self,
         prompt: Union[str, List[Union[str, ImagePart, dict]]],
         *,
-        remember: bool = True,
+        remember: Optional[bool] = None,
         model: Optional[Union[ModelType, str]] = None,
         effort: Optional[str] = None,
         web_search: bool = False,
@@ -545,7 +573,7 @@ class DuckChat:
         image: Union[str, bytes, ImagePart],
         *,
         mime_type: str = "image/png",
-        remember: bool = True,
+        remember: Optional[bool] = None,
         model: Optional[Union[ModelType, str]] = None,
         effort: Optional[str] = None,
         web_search: bool = False,

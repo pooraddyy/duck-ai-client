@@ -36,6 +36,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=4,
         help="Maximum retry attempts per request (default 4)",
     )
+    p.add_argument(
+        "--history",
+        action="store_true",
+        help="Enable multi-turn chat history (default: disabled, each prompt is a fresh single turn)",
+    )
     sub = p.add_subparsers(dest="cmd")
 
     chat = sub.add_parser("chat", help="Interactive chat (default)")
@@ -90,7 +95,10 @@ def _img(spec: str):
 
 def _make_client(args) -> DuckChat:
     return DuckChat(
-        model=args.model, effort=args.effort, max_retries=args.retries
+        model=args.model,
+        effort=args.effort,
+        max_retries=args.retries,
+        history=bool(getattr(args, "history", False)),
     )
 
 def _run_chat(args: argparse.Namespace) -> int:
@@ -122,7 +130,11 @@ def _run_chat(args: argparse.Namespace) -> int:
         finally:
             duck.close()
         return 0
-    print(f"p2d-duck {__version__} ({args.model}) - type /reset, /quit")
+    hist_state = "on" if duck.history_enabled else "off"
+    print(
+        f"p2d-duck {__version__} ({args.model}) [history: {hist_state}] - "
+        "type /reset, /history on|off, /quit"
+    )
     try:
         while True:
             try:
@@ -137,6 +149,22 @@ def _run_chat(args: argparse.Namespace) -> int:
             if line in ("/r", "/reset"):
                 duck.reset()
                 print("(history cleared)")
+                continue
+            if line.startswith("/history"):
+                # /history          -> show state
+                # /history on|off   -> toggle
+                parts = line.split()
+                if len(parts) == 1:
+                    state = "on" if duck.history_enabled else "off"
+                    print(f"(history: {state})")
+                elif parts[1] in ("on", "1", "true", "enable"):
+                    duck.enable_history()
+                    print("(history: on)")
+                elif parts[1] in ("off", "0", "false", "disable"):
+                    duck.disable_history()
+                    print("(history: off, cleared)")
+                else:
+                    print("usage: /history [on|off]")
                 continue
             try:
                 print("ai> ", end="", flush=True)

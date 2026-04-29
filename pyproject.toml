@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "p2d-duck"
-version = "1.1.0"
+version = "1.2.0"
 description = "Free Python client for DuckDuckGo AI Chat (duck.ai). Sync, streaming, image generation, image edit, multimodal vision, web search. Auto-retry on challenge failures. No API key required."
 readme = "README.md"
 license = { text = "MIT" }
