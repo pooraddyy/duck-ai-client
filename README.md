@@ -1,4 +1,4 @@
-# duck-ai
+# p2d-duck
 
 Free, no-API-key Python client for **DuckDuckGo AI Chat** ([duck.ai](https://duck.ai)).
 
@@ -10,7 +10,7 @@ Free, no-API-key Python client for **DuckDuckGo AI Chat** ([duck.ai](https://duc
 - **Image generation** (`image-generation` model).
 - **Image upload / multimodal** (vision-capable chats).
 - Built-in solver for the `x-vqd-hash-1` JS challenge via `mini-racer`.
-- CLI: `duck-ai`.
+- CLI: `p2d-duck`.
 - No account, no API key, no server, no fee.
 
 ## Install
@@ -18,6 +18,8 @@ Free, no-API-key Python client for **DuckDuckGo AI Chat** ([duck.ai](https://duc
 ```bash
 pip install p2d-duck
 ```
+
+> The Python import name is still `duck_ai`, e.g. `from duck_ai import DuckChat`.
 
 Latest release: [**v1.0.3**](https://github.com/pooraddyy/duck-ai-client/releases/tag/v1.0.3) — see the full changelog on the release page.
 
@@ -177,7 +179,7 @@ proof-of-work challenge encoded in the `x-vqd-hash-1` header. The server returns
 an obfuscated JavaScript snippet that must be evaluated against a browser-like
 environment to compute valid client hashes.
 
-`duck-ai` ships with:
+`p2d-duck` ships with:
 
 1. A minimal browser-DOM JavaScript shim (`_stubs.js`).
 2. An embedded V8 isolate via [`mini-racer`](https://pypi.org/project/mini-racer/)

@@ -7,11 +7,11 @@ from . import DuckChat, __version__, gpt4, image_generation, list_models
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="duck-ai",
+        prog="p2d-duck",
         description="Free DuckDuckGo AI Chat (duck.ai) client. No API key required.",
     )
     p.add_argument(
-        "-v", "--version", action="version", version=f"duck-ai {__version__}"
+        "-v", "--version", action="version", version=f"p2d-duck {__version__}"
     )
     p.add_argument(
         "-m",
@@ -97,7 +97,7 @@ def _run_chat(args: argparse.Namespace) -> int:
         finally:
             duck.close()
         return 0
-    print(f"duck-ai {__version__} ({args.model}) - type /reset, /quit")
+    print(f"p2d-duck {__version__} ({args.model}) - type /reset, /quit")
     try:
         while True:
             try:
